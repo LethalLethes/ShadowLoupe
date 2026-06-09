@@ -9,14 +9,12 @@
 /* Begin PBXBuildFile section */
 		A1000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* AppDelegate.swift */; };
 		A1000002 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ViewController.swift */; };
-		A1000003 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = A2000003 /* LaunchScreen.storyboard */; };
 		A1000004 /* dist in Resources */ = {isa = PBXBuildFile; fileRef = A2000004 /* dist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A2000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A2000002 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
-		A2000003 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		A2000004 /* dist */ = {isa = PBXFileReference; lastKnownFileType = folder; path = dist; sourceTree = "<group>"; };
 		A2000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A3000001 /* LoupeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LoupeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -38,7 +36,6 @@
 			children = (
 				A2000001 /* AppDelegate.swift */,
 				A2000002 /* ViewController.swift */,
-				A2000003 /* LaunchScreen.storyboard */,
 				A2000004 /* dist */,
 				A2000005 /* Info.plist */,
 			);
@@ -119,7 +116,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000003 /* LaunchScreen.storyboard in Resources */,
 				A1000004 /* dist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
