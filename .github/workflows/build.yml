@@ -91,6 +91,7 @@ jobs:
       # ── 5. Build unsigned .xcarchive ──────────────────────────────────────
       - name: Archive (unsigned)
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project LoupeApp/LoupeApp.xcodeproj \
             -scheme LoupeApp \
@@ -100,7 +101,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            | xcpretty || true
+            ENABLE_BITCODE=NO \
+            2>&1 | tee /tmp/xcodebuild.log
+          echo "Exit code: $?"
+          ls $RUNNER_TEMP/Loupe.xcarchive 2>/dev/null && echo "Archive created ✓" || (echo "Archive NOT created ✗" && cat /tmp/xcodebuild.log | grep -E "error:|warning:|FAILED" | tail -30 && exit 1)
 
       # ── 6. Package .ipa manually ──────────────────────────────────────────
       - name: Package IPA
