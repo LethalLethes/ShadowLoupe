@@ -23,16 +23,58 @@ jobs:
       - name: Install & build React app
         working-directory: react-source
         run: |
-          # Remove workspace-only dependencies that don't exist outside Replit
+          # Replace catalog: and workspace: deps, remove Replit-only packages
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
-            delete pkg.dependencies?.['@workspace/api-client-react'];
-            delete pkg.devDependencies?.['@workspace/api-client-react'];
-            delete pkg.devDependencies?.['@replit/vite-plugin-cartographer'];
-            delete pkg.devDependencies?.['@replit/vite-plugin-dev-banner'];
-            delete pkg.devDependencies?.['@replit/vite-plugin-runtime-error-modal'];
+
+            const catalog = {
+              '@tailwindcss/vite': '^4.1.14',
+              '@tanstack/react-query': '^5.90.21',
+              '@types/node': '^25.3.3',
+              '@types/react': '^19.2.0',
+              '@types/react-dom': '^19.2.0',
+              '@vitejs/plugin-react': '^5.0.4',
+              'class-variance-authority': '^0.7.1',
+              'clsx': '^2.1.1',
+              'framer-motion': '^12.23.24',
+              'lucide-react': '^0.545.0',
+              'react': '19.1.0',
+              'react-dom': '19.1.0',
+              'tailwind-merge': '^3.3.1',
+              'tailwindcss': '^4.1.14',
+              'vite': '^7.3.2',
+              'wouter': '^3.3.5',
+              'zod': '^3.25.76',
+            };
+
+            const removePackages = [
+              '@workspace/api-client-react',
+              '@replit/vite-plugin-cartographer',
+              '@replit/vite-plugin-dev-banner',
+              '@replit/vite-plugin-runtime-error-modal',
+            ];
+
+            for (const section of ['dependencies', 'devDependencies']) {
+              if (!pkg[section]) continue;
+              for (const [name, ver] of Object.entries(pkg[section])) {
+                if (removePackages.includes(name)) {
+                  delete pkg[section][name];
+                } else if (ver === 'catalog:') {
+                  if (catalog[name]) {
+                    pkg[section][name] = catalog[name];
+                  } else {
+                    console.warn('Unknown catalog entry: ' + name + ', removing');
+                    delete pkg[section][name];
+                  }
+                } else if (typeof ver === 'string' && ver.startsWith('workspace:')) {
+                  delete pkg[section][name];
+                }
+              }
+            }
+
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+            console.log('package.json updated successfully');
           "
           npm install --legacy-peer-deps
           npm run build
