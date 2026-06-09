@@ -1,0 +1,82 @@
+name: Build Loupe IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Node & build React ────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install & build React app
+        working-directory: react-source
+        run: |
+          # Remove workspace-only dependencies that don't exist outside Replit
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+            delete pkg.dependencies?.['@workspace/api-client-react'];
+            delete pkg.devDependencies?.['@workspace/api-client-react'];
+            delete pkg.devDependencies?.['@replit/vite-plugin-cartographer'];
+            delete pkg.devDependencies?.['@replit/vite-plugin-dev-banner'];
+            delete pkg.devDependencies?.['@replit/vite-plugin-runtime-error-modal'];
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          npm install --legacy-peer-deps
+          npm run build
+
+      # ── 3. Copy dist into Swift project ───────────────────────────────────
+      - name: Copy React dist to Swift bundle
+        run: |
+          cp -r react-source/dist LoupeApp/LoupeApp/dist
+
+      # ── 4. Select Xcode ────────────────────────────────────────────────────
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      # ── 5. Build unsigned .xcarchive ──────────────────────────────────────
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild archive \
+            -project LoupeApp/LoupeApp.xcodeproj \
+            -scheme LoupeApp \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath $RUNNER_TEMP/Loupe.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            | xcpretty || true
+
+      # ── 6. Package .ipa manually ──────────────────────────────────────────
+      - name: Package IPA
+        run: |
+          APP_PATH=$(find $RUNNER_TEMP/Loupe.xcarchive -name "*.app" | head -1)
+          echo "Found app: $APP_PATH"
+
+          mkdir -p /tmp/ipa_stage/Payload
+          cp -r "$APP_PATH" /tmp/ipa_stage/Payload/
+
+          cd /tmp/ipa_stage
+          zip -r Loupe.ipa Payload/
+          echo "IPA created: $(du -sh Loupe.ipa)"
+
+      # ── 7. Upload IPA ──────────────────────────────────────────────────────
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loupe-${{ github.run_number }}.ipa
+          path: /tmp/ipa_stage/Loupe.ipa
+          retention-days: 30
